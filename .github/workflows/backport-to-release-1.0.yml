@@ -20,7 +20,7 @@ jobs:
 
       - name: Configure git author
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Ensure target branch exists
@@ -32,32 +32,22 @@ jobs:
         env:
           PRNUM: ${{ github.event.pull_request.number }}
         run: |
-          git fetch origin release-1.0 --depth=0
+          git fetch origin release-1.0
           BP="backport/pr-${PRNUM}-to-release-1.0"
           git checkout -B "$BP" origin/release-1.0
           echo "BP=$BP" >> "$GITHUB_ENV"
 
-      - name: Get the commit that actually landed on main
-        env:
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      - name: Cherry-pick the merge commit
         run: |
-          # Make sure we have the merge commit locally
-          git fetch origin --tags --prune
-          # Detect if it's a merge commit (2+ parents) -> needs -m 1
-          PCOUNT=$(git show -s --format=%P "$MERGE_SHA" | wc -w | tr -d ' ')
-          if [ "$PCOUNT" -gt 1 ]; then echo "CHERRY_ARGS=-m 1" >> "$GITHUB_ENV"; fi
-          echo "MERGE_SHA=$MERGE_SHA" >> "$GITHUB_ENV"
-
-      - name: Cherry-pick merge result onto release-1.0 (prefer PR changes)
-        run: |
-          set -e
-          git cherry-pick -x -X theirs ${CHERRY_ARGS:-} "$MERGE_SHA" || {
-            echo "Conflict detected; preferring PR version for conflicted paths"
-            # take 'theirs' (the PR commit) for all conflicts, then continue
-            git checkout --theirs .
-            git add -A
-            git cherry-pick --continue || { echo "::error::Cherry-pick failed after auto-resolve"; exit 1; }
-          }
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          git fetch origin main --prune
+          # Robust parent count
+          PARENTS=$(git rev-list --parents -n 1 "$MERGE_SHA" | awk '{print NF-1}')
+          if [ "$PARENTS" -gt 1 ]; then
+          git cherry-pick -x -m 1 "$MERGE_SHA" || { git cherry-pick --abort; exit 1; }
+          else
+          git cherry-pick -x "$MERGE_SHA" || { git cherry-pick --abort; exit 1; }
+          fi
 
       - name: Push backport branch
         run: git push --set-upstream origin "$BP"
