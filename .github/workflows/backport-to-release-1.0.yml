@@ -37,14 +37,19 @@ jobs:
           git checkout -B "$BP" origin/release-1.0
           echo "BP=$BP" >> "$GITHUB_ENV"
 
-      - name: Apply PR diff onto release-1.0
+      - name: Apply PR patch (diff-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PRNUM=${{ github.event.pull_request.number }}
-          git fetch origin pull/$PRNUM/head:pr-$PRNUM
-          git checkout "$BP"
-          # Merge the PR branch into release-1.0 without committing, allow conflicts
-          git merge --no-commit --no-ff "pr-$PRNUM" || true
-          git commit -am "Backport PR #$PRNUM to release-1.0 (with conflicts to resolve)" || true
+          set -e
+          PR=${{ github.event.pull_request.number }}
+          gh pr diff $PR --patch > /tmp/pr.patch
+          # Try to apply; allow rejects so the branch is still created
+          git apply --3way --index --reject /tmp/pr.patch || true
+          if git diff --cached --quiet; then
+          echo "No staged changes"; exit 0
+          fi
+          git commit -m "Backport PR #$PR to release-1.0 (patch)"
 
       - name: Push backport branch
         run: git push --set-upstream origin "$BP"
