@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged PR number to backport"
+        required: true
+        type: string
 
 jobs:
   backport:
