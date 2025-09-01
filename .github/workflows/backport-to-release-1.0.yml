@@ -3,97 +3,56 @@ name: Backport release PR to release-1.0
 on:
   pull_request:
     types: [closed]
-    branches: [main] # only when PRs into main are closed
-
-concurrency:
-  group: backport-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: false
+    branches: [main]
 
 jobs:
   backport:
-    # Run only if the PR was merged AND it has a "release" label
-    if: >
-      ${{ github.event.pull_request.merged == true &&
-          contains(toJson(github.event.pull_request.labels), '"name":"release"') }}
+    if: ${{ github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release') }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push branch
-      pull-requests: write # open/comment PRs
+      contents: write
+      pull-requests: write
 
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify target branch exists (release-1.0)
-        run: |
-          if git ls-remote --exit-code --heads origin release-1.0; then
-            echo "release-1.0 exists"
-          else
-            echo "::error::Target branch 'release-1.0' does not exist on origin."
-            exit 1
-          fi
-
       - name: Configure git author
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Create backport branch from release-1.0
-        id: bp
+      - name: Create backport branch off release-1.0
+        env:
+          PRNUM: ${{ github.event.pull_request.number }}
         run: |
-          BP="backport/pr-${{ github.event.pull_request.number }}-to-release-1.0"
-          echo "BP=$BP" >> $GITHUB_ENV
+          git fetch origin release-1.0
+          BP="backport/pr-${PRNUM}-to-release-1.0"
           git checkout -B "$BP" origin/release-1.0
+          echo "BP=$BP" >> "$GITHUB_ENV"
 
-      - name: Determine commits in the merged PR
-        id: commits
+      - name: Get commits from PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR=${{ github.event.pull_request.number }}
-          REPO="${{ github.repository }}"
-          # Use PR commits list to handle merge/squash/rebase uniformly
-          gh api repos/$REPO/pulls/$PR/commits --paginate --jq '.[].sha' > /tmp/commits.txt
-          if [ ! -s /tmp/commits.txt ]; then
-            # Fallback to the merge commit if list is empty
-            echo "${{ github.event.pull_request.merge_commit_sha }}" > /tmp/commits.txt
-          fi
-          echo "count=$(wc -l < /tmp/commits.txt)" >> $GITHUB_OUTPUT
+          gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits \
+            --paginate --jq '.[].sha' > /tmp/commits.txt
+          test -s /tmp/commits.txt || { echo "::error::No commits found"; exit 1; }
 
-      - name: Cherry-pick commits onto release-1.0
+      - name: Cherry-pick
         run: |
-          set -e
           while read SHA; do
-            echo "Cherry-picking $SHA"
-            # -x appends "(cherry picked from commit ...)"
-            # -X theirs reduces conflicts by preferring incoming changes
-            git cherry-pick -x -X theirs "$SHA" || {
-              echo "::warning::Cherry-pick conflict on $SHA; aborting."
-              git cherry-pick --abort
-              exit 1
-            }
+            git cherry-pick -x -X theirs "$SHA" || { git cherry-pick --abort; exit 1; }
           done < /tmp/commits.txt
 
       - name: Push backport branch
-        run: |
-          git push --set-upstream origin "$BP"
+        run: git push --set-upstream origin "$BP"
 
       - name: Open PR to release-1.0
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TITLE="Backport PR #${{ github.event.pull_request.number }} to release-1.0"
-          BODY=$'Automated backport of #${{ github.event.pull_request.number }} to `release-1.0`.\n\n'\
-               $'Original PR: #${{ github.event.pull_request.number }}\n'\
-               $'Merged commit: `${{ github.event.pull_request.merge_commit_sha }}`\n'
+          BODY="Automated backport of #${{ github.event.pull_request.number }} to \`release-1.0\`."
           gh pr create --title "$TITLE" --body "$BODY" --base release-1.0 --head "$BP" --label backport
-
-      - name: Comment on source PR
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "✅ Opened a backport PR targeting \`release-1.0\` from this release-labeled merge."
