@@ -46,17 +46,40 @@ jobs:
       - name: Apply PR patch (diff-only)
         env:
           GH_TOKEN: ${{ github.token }}
-          PRNUM: ${{ github.event.pull_request.number || inputs.pr_number }}
+          PRNUM: ${{ env.PRNUM }}
         run: |
-          set -e
-          PR=${PRNUM}
-          gh pr diff $PR --patch > /tmp/pr.patch
-          # Try to apply; allow rejects so the branch is still created
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+
+          # Get PR commits
+          gh api "repos/$REPO/pulls/$PRNUM/commits" --paginate > /tmp/commits.json
+          FIRST_COMMIT_SHA=$(jq -r '.[0].sha' /tmp/commits.json)
+          LAST_COMMIT_SHA=$(jq -r '.[-1].sha' /tmp/commits.json)
+
+          echo "PR #$PRNUM commit range:"
+          echo "  first commit: $FIRST_COMMIT_SHA"
+          echo "  last commit : $LAST_COMMIT_SHA"
+          echo
+
+          # Fetch those SHAs locally
+          git fetch origin "$FIRST_COMMIT_SHA" "$LAST_COMMIT_SHA"
+
+          # Build the patch
+          echo "Running: git diff --patch $FIRST_COMMIT_SHA...$LAST_COMMIT_SHA > /tmp/pr.patch"
+          git diff --patch $FIRST_COMMIT_SHA...$LAST_COMMIT_SHA > /tmp/pr.patch
+
+          echo "---- Patch preview (first 100 lines) ----"
+          head -n 100 /tmp/pr.patch || true
+          echo "---- End patch preview ----"
+
+          # Apply patch to current backport branch
           git apply --3way --index --reject /tmp/pr.patch || true
+
           if git diff --cached --quiet; then
-          echo "No staged changes"; exit 0
+          echo "No staged changes from PR diff"; exit 0
           fi
-          git commit -m "Backport PR #$PR to release-1.0 (patch)"
+
+          git commit -m "Backport PR #$PRNUM to release-1.0 (commits $FIRST_COMMIT_SHA..$LAST_COMMIT_SHA)"
 
       - name: Push backport branch
         run: git push --set-upstream origin "$BP"
