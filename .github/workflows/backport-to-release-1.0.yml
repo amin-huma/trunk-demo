@@ -52,10 +52,9 @@ jobs:
       - name: Push backport branch
         run: git push --set-upstream origin "$BP"
 
-      - name: Open PR to release-1.0
+      - name: Comment backport branch on source PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TITLE="Backport PR #${{ github.event.pull_request.number }} to release-1.0"
-          BODY="Automated backport of #${{ github.event.pull_request.number }} to \`release-1.0\`."
-          gh pr create --title "$TITLE" --body "$BODY" --base release-1.0 --head "$BP" --label backport
+          gh pr comment ${{ github.event.pull_request.number }} \
+          --body "📌 A backport branch has been created: \`${BP}\`. Please open a PR from it into \`release-1.0\`."
