@@ -13,4 +13,8 @@ Test no. 12
 Test no. 13
 Test no. 14
 Test no. 15
+<<<<<<< HEAD
 >>>>>>> d3af46b (Fix 15)
+=======
+Test no. 16
+>>>>>>> 418958c (Fix 16)
