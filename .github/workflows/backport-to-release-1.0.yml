@@ -1,70 +1,83 @@
-name: Backport release PR to release-1.0
+name: PR Merge Commit Range Reporter
 
 on:
   pull_request:
     types: [closed]
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "Merged PR number to backport"
-        required: true
-        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
 
 jobs:
-  backport:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.action == 'closed' &&
-       github.event.pull_request.merged == true &&
-       contains(github.event.pull_request.labels.*.name, 'release'))
+  report-commit-range:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-
-    env:
-      GH_REPO: ${{ github.repository }} # ensures gh knows repo
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
     steps:
-      - name: Resolve & validate PR
-        id: pr
-        shell: bash
-        run: |
-          set -euo pipefail
-          PR_NUM="${{ github.event.pull_request.number }}"
-          if [[ -z "$PR_NUM" ]]; then
-              echo "ERROR: pull_request.number is empty" >&2
-              exit 2
-          fi
-          # Validate PR exists to avoid a vague 404 later
-          gh api "repos/$GH_REPO/pulls/$PR_NUM" >/dev/null
-          echo "NUMBER=$PR_NUM" >> "$GITHUB_OUTPUT"
+      - name: Determine commit range and report
+        id: report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
 
-      - name: Get first and last commit in PR
-        id: commits
-        shell: bash
-        run: |
-          set -euo pipefail
-          PR="${{ steps.pr.outputs.NUMBER }}"
-          COMMITS=$(gh api "repos/$GH_REPO/pulls/$PR/commits" --paginate -F per_page=100 --jq '.[].sha')
-          if [[ -z "$COMMITS" ]]; then
-              echo "ERROR: No commits returned for PR #$PR" >&2
-              exit 3
-          fi
-          FIRST=$(printf "%s\n" "$COMMITS" | head -n1)
-          LAST=$(printf "%s\n" "$COMMITS" | tail -n1)
-          echo "FIRST=$FIRST" >> "$GITHUB_OUTPUT"
-          echo "LAST=$LAST"   >> "$GITHUB_OUTPUT"
+            // Fetch all commits in this PR (handles pagination)
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              { owner, repo, pull_number: pr.number, per_page: 100 }
+            );
 
-      - name: Comment cherry-pick command
-        shell: bash
-        run: |
-          gh pr comment ${{ steps.pr.outputs.NUMBER }} --body \
-          "To replay this PR on another branch, run:
+            if (!commits.length) {
+              core.setFailed('No commits found in this PR.');
+              return;
+            }
 
-          \`\`\`bash
-          git cherry-pick ${{ steps.commits.outputs.FIRST }}^..${{ steps.commits.outputs.LAST }}
-          \`\`\`"
+            const startSha = commits[0].sha;
+            const endSha = commits[commits.length - 1].sha;
+            const headRef = pr.head.ref; // PR branch name
+            const baseRef = pr.base.ref; // target branch name
+
+            core.info(`Head branch: ${headRef}`);
+            core.info(`Base branch: ${baseRef}`);
+            core.info(`Start commit SHA: ${startSha}`);
+            core.info(`End commit SHA: ${endSha}`);
+
+            // Expose as outputs (in case other steps need them later)
+            core.setOutput('start_sha', startSha);
+            core.setOutput('end_sha', endSha);
+            core.setOutput('head_ref', headRef);
+            core.setOutput('base_ref', baseRef);
+
+            // Job Summary for quick viewing in the Actions UI
+            await core.summary
+              .addHeading('PR Merge Commit Range')
+              .addRaw(`PR #${pr.number} merged: ${pr.title}`, true)
+              .addTable([
+                [{ data: 'Head Branch', header: true }, headRef],
+                [{ data: 'Base Branch', header: true }, baseRef],
+                [{ data: 'Start SHA', header: true }, startSha],
+                [{ data: 'End SHA', header: true }, endSha],
+              ])
+              .addLink('View PR', pr.html_url)
+              .write();
+
+            // Comment on the PR with the SHAs
+            const body = [
+              `This PR has been merged.`,
+              `Head branch: ${headRef}`,
+              `Base branch: ${baseRef}`,
+              `Start commit SHA: ${startSha}`,
+              `End commit SHA: ${endSha}`,
+            ].join('\n');
+
+            try {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body,
+              });
+            } catch (err) {
+              core.warning(`Failed to comment on PR (likely due to permissions on forked PRs): ${err.message}`);
+            }
