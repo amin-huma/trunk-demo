@@ -21,37 +21,50 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'release'))
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
 
+    env:
+      GH_REPO: ${{ github.repository }} # ensures gh knows repo
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
-      - name: Resolve PR number
+      - name: Resolve & validate PR
         id: pr
+        shell: bash
         run: |
-          PR="${{ github.event.pull_request.number }}"
-          if [ -z "$PR" ]; then PR="${{ inputs.pr_number }}"; fi
-          echo "NUMBER=$PR" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          PR_NUM="${{ github.event.pull_request.number }}"
+          if [[ -z "$PR_NUM" ]]; then
+              echo "ERROR: pull_request.number is empty" >&2
+              exit 2
+          fi
+          # Validate PR exists to avoid a vague 404 later
+          gh api "repos/$GH_REPO/pulls/$PR_NUM" >/dev/null
+          echo "NUMBER=$PR_NUM" >> "$GITHUB_OUTPUT"
 
       - name: Get first and last commit in PR
         id: commits
+        shell: bash
         run: |
-          COMMITS=$(gh api \
-            repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.NUMBER }}/commits \
-            --paginate -F per_page=100 --jq '.[].sha')
+          set -euo pipefail
+          PR="${{ steps.pr.outputs.NUMBER }}"
+          COMMITS=$(gh api "repos/$GH_REPO/pulls/$PR/commits" --paginate -F per_page=100 --jq '.[].sha')
+          if [[ -z "$COMMITS" ]]; then
+              echo "ERROR: No commits returned for PR #$PR" >&2
+              exit 3
+          fi
           FIRST=$(printf "%s\n" "$COMMITS" | head -n1)
           LAST=$(printf "%s\n" "$COMMITS" | tail -n1)
-          echo "FIRST=$FIRST" >> $GITHUB_OUTPUT
-          echo "LAST=$LAST"  >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "FIRST=$FIRST" >> "$GITHUB_OUTPUT"
+          echo "LAST=$LAST"   >> "$GITHUB_OUTPUT"
 
       - name: Comment cherry-pick command
+        shell: bash
         run: |
           gh pr comment ${{ steps.pr.outputs.NUMBER }} --body \
-            "To replay this PR on another branch, run:
+          "To replay this PR on another branch, run:
 
-            \`\`\`bash
-            git cherry-pick ${{ steps.commits.outputs.FIRST }}^..${{ steps.commits.outputs.LAST }}
-            \`\`\`"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          \`\`\`bash
+          git cherry-pick ${{ steps.commits.outputs.FIRST }}^..${{ steps.commits.outputs.LAST }}
+          \`\`\`"
