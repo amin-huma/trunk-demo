@@ -166,3 +166,23 @@ jobs:
             } catch (err) {
               core.warning(`Failed to comment compare link: ${err.message}`);
             }
+
+      - name: Label PR as missed from release on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const label = 'missed from release';
+            try {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pr.number,
+                labels: [label],
+              });
+              core.info(`Added label '${label}' to PR #${pr.number}`);
+            } catch (err) {
+              core.warning(`Failed to add label '${label}' to PR #${pr.number}: ${err.message}`);
+            }
