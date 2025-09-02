@@ -7,3 +7,10 @@ Another fix in the release
 Another fix in the release - Number 8
 Another fix in the release - Number 9
 Test no. 11
+<<<<<<< HEAD
+=======
+Test no. 12
+Test no. 13
+Test no. 14
+Test no. 15
+>>>>>>> d3af46b (Fix 15)
