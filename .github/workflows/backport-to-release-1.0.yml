@@ -145,3 +145,24 @@ jobs:
             } catch (err) {
               core.warning(`Failed to create PR (it may already exist or permissions are insufficient): ${err.message}`);
             }
+
+      - name: Comment compare link to cherry-pick branch
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const compareUrl = `https://github.com/${owner}/${repo}/compare/release-1.0...cherrypick/${pr.number}`;
+            const body = `Compare link for cherry-pick branch:\n${compareUrl}`;
+            try {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body,
+              });
+              core.info(`Commented compare link: ${compareUrl}`);
+            } catch (err) {
+              core.warning(`Failed to comment compare link: ${err.message}`);
+            }
