@@ -13,81 +13,45 @@ on:
 
 jobs:
   backport:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged && contains(github.event.pull_request.labels.*.name, 'release')) }}
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'closed' &&
+       github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'release'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git author
+      - name: Resolve PR number
+        id: pr
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          PR="${{ github.event.pull_request.number }}"
+          if [ -z "$PR" ]; then PR="${{ inputs.pr_number }}"; fi
+          echo "NUMBER=$PR" >> $GITHUB_OUTPUT
 
-      - name: Ensure target branch exists
+      - name: Get first and last commit in PR
+        id: commits
         run: |
-          git ls-remote --exit-code --heads origin release-1.0 >/dev/null || {
-            echo "::error::Target branch 'release-1.0' not found"; exit 1; }
-
-      - name: Create backport branch off release-1.0
+          COMMITS=$(gh api \
+            repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.NUMBER }}/commits \
+            --paginate -F per_page=100 --jq '.[].sha')
+          FIRST=$(printf "%s\n" "$COMMITS" | head -n1)
+          LAST=$(printf "%s\n" "$COMMITS" | tail -n1)
+          echo "FIRST=$FIRST" >> $GITHUB_OUTPUT
+          echo "LAST=$LAST"  >> $GITHUB_OUTPUT
         env:
-          PRNUM: ${{ github.event.pull_request.number || inputs.pr_number }}
-        run: |
-          git fetch origin release-1.0
-          BP="backport/pr-${PRNUM}-to-release-1.0"
-          git checkout -B "$BP" origin/release-1.0
-          echo "BP=$BP" >> "$GITHUB_ENV"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apply PR patch (diff-only)
+      - name: Comment cherry-pick command
+        run: |
+          gh pr comment ${{ steps.pr.outputs.NUMBER }} --body \
+            "To replay this PR on another branch, run:
+
+            \`\`\`bash
+            git cherry-pick ${{ steps.commits.outputs.FIRST }}^..${{ steps.commits.outputs.LAST }}
+            \`\`\`"
         env:
-          GH_TOKEN: ${{ github.token }}
-          PRNUM: ${{ env.PRNUM }}
-        run: |
-          set -euo pipefail
-          REPO="${{ github.repository }}"
-
-          # Get PR commits
-          gh api "repos/$REPO/pulls/$PRNUM/commits" --paginate > /tmp/commits.json
-          FIRST_COMMIT_SHA=$(jq -r '.[0].sha' /tmp/commits.json)
-          LAST_COMMIT_SHA=$(jq -r '.[-1].sha' /tmp/commits.json)
-
-          echo "PR #$PRNUM commit range:"
-          echo "  first commit: $FIRST_COMMIT_SHA"
-          echo "  last commit : $LAST_COMMIT_SHA"
-          echo
-
-          # Fetch those SHAs locally
-          git fetch origin "$FIRST_COMMIT_SHA" "$LAST_COMMIT_SHA"
-
-          # Build the patch
-          echo "Running: git diff --patch $FIRST_COMMIT_SHA...$LAST_COMMIT_SHA > /tmp/pr.patch"
-          git diff --patch $FIRST_COMMIT_SHA...$LAST_COMMIT_SHA > /tmp/pr.patch
-
-          echo "---- Patch preview (first 100 lines) ----"
-          head -n 100 /tmp/pr.patch || true
-          echo "---- End patch preview ----"
-
-          # Apply patch to current backport branch
-          git apply --3way --index --reject /tmp/pr.patch || true
-
-          if git diff --cached --quiet; then
-          echo "No staged changes from PR diff"; exit 0
-          fi
-
-          git commit -m "Backport PR #$PRNUM to release-1.0 (commits $FIRST_COMMIT_SHA..$LAST_COMMIT_SHA)"
-
-      - name: Push backport branch
-        run: git push --set-upstream origin "$BP"
-
-      - name: Comment backport branch on source PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PRNUM: ${{ github.event.pull_request.number || inputs.pr_number }}
-        run: |
-          gh pr comment $PRNUM \
-          --body "📌 A backport branch has been created: \`${BP}\`. Please open a PR from it into \`release-1.0\`."
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
